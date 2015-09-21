@@ -7,9 +7,15 @@ on the request, such as form content or json encoded data.
 from __future__ import unicode_literals
 
 import json
+import cStringIO
+import base64
+import uuid
+import urllib
+import re
 
 from django.conf import settings
 from django.core.files.uploadhandler import StopFutureHandlers
+from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.http import QueryDict
 from django.http.multipartparser import \
     MultiPartParser as DjangoMultiPartParser
@@ -110,7 +116,10 @@ class MultiPartParser(BaseParser):
         upload_handlers = request.upload_handlers
 
         try:
-            parser = DjangoMultiPartParser(meta, stream, upload_handlers, encoding)
+            parser = DjangoMultiPartParser(meta,
+                                           stream,
+                                           upload_handlers,
+                                           encoding)
             data, files = parser.parse()
             return DataAndFiles(data, files)
         except MultiPartParserError as exc:
@@ -220,3 +229,64 @@ class FileUploadParser(BaseParser):
         except (ValueError, LookupError):
             filename = force_text(filename_parm['filename'])
         return filename
+
+
+class ImageUrlParser(BaseParser):
+    """
+    Parser for uploading images through URL strings in application/json.
+    JSON data must have an attribute called "url_keys", which is an array
+    of strings that identify which keys are image urls.
+    """
+
+    media_type = "application/json"
+
+    def generate_uuid_filename(self):
+        return str(uuid.uuid4())
+
+    def handle_image(self, string_url):
+        """
+        Takes a url string and converts it into a Django InMemoryUploadedFile
+        """
+
+        """
+            Assumes URL is http-based, otherwise apply base64 decoding.
+            If the latter, save image as PNG
+        """
+        if re.search(r'http', string_url) is not None:
+            file_item = cStringIO.StringIO(urllib.urlopen(string_url).read())
+            image_format = re.search(r".([A-Za-z0-9]*)$", string_url).group(1)
+        else:
+            file_item = cStringIO.StringIO(base64.b64decode(string_url))
+            image_format = "png"
+        """
+            Sets size of file
+        """
+        file_item.seek(0, os.SEEK_END)
+        size = file_item.tell()
+        file_item.seek(0)
+        """
+            Creates InMemoryUploadedFile
+        """
+        image = InMemoryUploadedFile(
+            file_item,
+            None,
+            ".".join([self.generate_uuid_filename(), image_format]),
+            "/".join(['image', image_format]),
+            size,
+            None)
+        return image
+
+    def parse(self, stream, media_type, parser_context):
+        """
+            Parses url keys in request,
+            resetting them to InMemoryUploadedFile
+        """
+        request = json.loads(stream.read())
+        dest_request = request.copy()
+        url_keys = request['url_keys']
+
+        for url_key in url_keys:
+            if url_key in request:
+                dest_request[url_key] = self.handle_image(request[url_key])
+
+        return dest_request

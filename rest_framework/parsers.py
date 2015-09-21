@@ -12,6 +12,7 @@ import base64
 import uuid
 import urllib
 import re
+import os
 
 from django.conf import settings
 from django.core.files.uploadhandler import StopFutureHandlers
